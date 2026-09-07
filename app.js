@@ -1,9 +1,57 @@
-// Configuration & Office Geofence
-const OFFICE_LOCATION = {
-    latitude: 12.9130596,
-    longitude: 79.1330797,
+// Configuration & Office Geofence (Defaults from variables, synced dynamically from DB)
+let OFFICE_LOCATION = {
+    latitude: 12.912985,
+    longitude: 79.132010,
     radius: 200 // meters
 };
+
+// Sync office location from database
+async function fetchOfficeLocation() {
+    try {
+        const res = await fetch("/api/office-location");
+        if (res.ok) {
+            const data = await res.json();
+            if (data.location) {
+                OFFICE_LOCATION.latitude = Number(data.location.latitude);
+                OFFICE_LOCATION.longitude = Number(data.location.longitude);
+                OFFICE_LOCATION.radius = Number(data.location.radius);
+
+                const targetEl = document.getElementById("targetOfficeCoords");
+                if (targetEl) {
+                    targetEl.textContent = `${OFFICE_LOCATION.latitude.toFixed(6)}, ${OFFICE_LOCATION.longitude.toFixed(6)}`;
+                }
+
+                // Recalculate distance if user coords already captured
+                if (userCoordinates) {
+                    const distance = calculateDistance(
+                        userCoordinates.latitude, userCoordinates.longitude,
+                        OFFICE_LOCATION.latitude, OFFICE_LOCATION.longitude
+                    );
+                    userCoordinates.distance = distance;
+                    const distVal = document.getElementById("distanceVal");
+                    if (distVal) distVal.textContent = `${distance.toFixed(0)} m`;
+
+                    const locationStatus = document.getElementById("location-status");
+                    const badgeText = document.getElementById("locationBadgeText");
+                    const dot = document.getElementById("locationDot");
+
+                    const isInside = distance <= OFFICE_LOCATION.radius;
+                    if (isInside) {
+                        if (locationStatus) locationStatus.textContent = `Within office perimeter (${distance.toFixed(0)}m away)`;
+                        if (badgeText) badgeText.textContent = "Inside Office";
+                        if (dot) dot.className = "location-dot green";
+                    } else {
+                        if (locationStatus) locationStatus.textContent = `Outside office bounds (${distance.toFixed(0)}m from office)`;
+                        if (badgeText) badgeText.textContent = "Outside Radius";
+                        if (dot) dot.className = "location-dot orange";
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.warn("Could not fetch office location from DB:", e);
+    }
+}
 
 const EMPLOYEE = {
     id: "EMP001",
@@ -391,6 +439,9 @@ async function loadHistory() {
 
 // --- Initialization on page load ---
 document.addEventListener("DOMContentLoaded", () => {
+    // Fetch dynamic office coordinates from DB
+    fetchOfficeLocation();
+
     // Start live clock and sync with server IST
     updateLiveClock();
     setInterval(updateLiveClock, 1000);

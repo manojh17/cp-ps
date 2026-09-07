@@ -3,6 +3,29 @@
 let serverTimeOffsetMs = 0;
 let currentDateFilter = "today";
 let searchDebounceTimeout = null;
+let officeConfig = { latitude: 12.912985, longitude: 79.132010, radius: 200 };
+
+// Fetch office location config from DB
+async function fetchOfficeLocation() {
+    try {
+        const res = await fetch("/api/office-location");
+        if (res.ok) {
+            const data = await res.json();
+            if (data.location) {
+                officeConfig.latitude = Number(data.location.latitude);
+                officeConfig.longitude = Number(data.location.longitude);
+                officeConfig.radius = Number(data.location.radius);
+
+                const coordsEl = document.getElementById("adminOfficeCoords");
+                const radiusEl = document.getElementById("adminOfficeRadius");
+                if (coordsEl) coordsEl.textContent = `${officeConfig.latitude.toFixed(6)}, ${officeConfig.longitude.toFixed(6)}`;
+                if (radiusEl) radiusEl.textContent = `${officeConfig.radius.toFixed(0)} meters`;
+            }
+        }
+    } catch (e) {
+        console.warn("Could not fetch office location from DB:", e);
+    }
+}
 
 // --- Toast System ---
 function showToast(message, type = "info", duration = 4000) {
@@ -142,7 +165,7 @@ function renderAdminTable(records) {
         const statusText = isActive ? "Active Now" : "Completed";
 
         // Geofence status
-        const isInside = r.distance_meters !== null && r.distance_meters <= 100;
+        const isInside = r.distance_meters !== null && r.distance_meters <= officeConfig.radius;
         const distLabel = r.distance_meters !== null ? `${Math.round(r.distance_meters)}m` : "--";
         const geoPillClass = isInside ? "geo-inside" : "geo-outside";
         const geoText = isInside ? `Inside (${distLabel})` : `Outside (${distLabel})`;
@@ -307,6 +330,7 @@ function loadAllAdminData(notify = false) {
 
 // --- Init ---
 document.addEventListener("DOMContentLoaded", () => {
+    fetchOfficeLocation();
     updateAdminLiveClock();
     setInterval(updateAdminLiveClock, 1000);
     syncServerTime();

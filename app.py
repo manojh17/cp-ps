@@ -7,6 +7,8 @@ from flask import Flask, jsonify, request, send_from_directory, Response
 from pymongo import MongoClient, DESCENDING
 from bson.objectid import ObjectId
 
+import math
+
 load_dotenv()
 
 app = Flask(__name__, static_folder=".", static_url_path="")
@@ -18,6 +20,61 @@ DB_NAME = os.getenv("DB_NAME", "attendance_db")
 mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=8000)
 db = mongo_client[DB_NAME]
 attendance_col = db["attendance"]
+settings_col = db["settings"]
+
+# Office Location Configuration (Configured from DB / .env)
+DEFAULT_OFFICE_LAT = float(os.getenv("OFFICE_LAT", 12.912985))
+DEFAULT_OFFICE_LON = float(os.getenv("OFFICE_LON", 79.132010))
+DEFAULT_OFFICE_RADIUS = float(os.getenv("OFFICE_RADIUS", 200))
+
+def get_office_location():
+    """
+    Retrieves office location from MongoDB settings collection.
+    If not yet initialized in DB, seeds it from .env variables or defaults.
+    """
+    try:
+        doc = settings_col.find_one({"_id": "office_location"})
+        if doc:
+            return {
+                "latitude": float(doc.get("latitude", DEFAULT_OFFICE_LAT)),
+                "longitude": float(doc.get("longitude", DEFAULT_OFFICE_LON)),
+                "radius": float(doc.get("radius", DEFAULT_OFFICE_RADIUS)),
+                "name": doc.get("name", "Office")
+            }
+        else:
+            initial_config = {
+                "_id": "office_location",
+                "name": "Main Office",
+                "latitude": DEFAULT_OFFICE_LAT,
+                "longitude": DEFAULT_OFFICE_LON,
+                "radius": DEFAULT_OFFICE_RADIUS,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }
+            settings_col.insert_one(initial_config)
+            return {
+                "latitude": DEFAULT_OFFICE_LAT,
+                "longitude": DEFAULT_OFFICE_LON,
+                "radius": DEFAULT_OFFICE_RADIUS,
+                "name": "Main Office"
+            }
+    except Exception as e:
+        print("Error fetching office location from DB:", e)
+        return {
+            "latitude": DEFAULT_OFFICE_LAT,
+            "longitude": DEFAULT_OFFICE_LON,
+            "radius": DEFAULT_OFFICE_RADIUS,
+            "name": "Main Office"
+        }
+
+def calculate_distance(lat1, lon1, lat2, lon2):
+    R = 6371000  # Earth radius in meters
+    d_lat = math.radians(lat2 - lat1)
+    d_lon = math.radians(lon2 - lon1)
+    a = (math.sin(d_lat / 2) ** 2 +
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
+         math.sin(d_lon / 2) ** 2)
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
 
 # Create index for fast employee and date lookups
 try:
@@ -94,6 +151,38 @@ def get_time():
         "timestamp": int(now_ist.timestamp())
     })
 
+# --- Office Location API (from DB / .env) ---
+@app.route("/api/office-location", methods=["GET", "POST"])
+def office_location():
+    if request.method == "POST":
+        data = request.get_json() or {}
+        lat = float(data.get("latitude", DEFAULT_OFFICE_LAT))
+        lon = float(data.get("longitude", DEFAULT_OFFICE_LON))
+        radius = float(data.get("radius", DEFAULT_OFFICE_RADIUS))
+        name = data.get("name", "Main Office")
+
+        settings_col.update_one(
+            {"_id": "office_location"},
+            {"$set": {
+                "latitude": lat,
+                "longitude": lon,
+                "radius": radius,
+                "name": name,
+                "updated_at": get_ist_now().isoformat()
+            }},
+            upsert=True
+        )
+        return jsonify({
+            "status": "success",
+            "message": "Office location updated successfully.",
+            "location": get_office_location()
+        })
+
+    return jsonify({
+        "status": "success",
+        "location": get_office_location()
+    })
+
 # --- Employee Attendance APIs (MongoDB) ---
 @app.route("/api/today", methods=["GET"])
 def get_today_status():
@@ -139,7 +228,19 @@ def check_in():
     employee_name = data.get("employee_name", "Manojh")
     latitude = data.get("latitude")
     longitude = data.get("longitude")
-    distance = data.get("distance", 0)
+    distance = data.get("distance")
+
+    office = get_office_location()
+    if latitude is not None and longitude is not None:
+        try:
+            computed_dist = calculate_distance(float(latitude), float(longitude), office["latitude"], office["longitude"])
+            if distance is None:
+                distance = computed_dist
+        except Exception:
+            if distance is None:
+                distance = 0
+    elif distance is None:
+        distance = 0
 
     now_ist = get_ist_now()
     today_str = format_ist_date(now_ist)
