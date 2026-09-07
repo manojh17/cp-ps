@@ -181,7 +181,7 @@ function renderAdminTable(records) {
                         ${isActive ? `
                             <button
                                 class="action-btn force-checkout"
-                                onclick="forceCheckOut(${r.id}, '${r.employee_name}')"
+                                onclick="forceCheckOut('${r.id}', '${r.employee_name}')"
                                 title="Check Out Employee Now"
                             >
                                 🏁 Check Out
@@ -189,7 +189,7 @@ function renderAdminTable(records) {
                         ` : ''}
                         <button
                             class="action-btn delete-btn"
-                            onclick="deleteRecord(${r.id}, '${r.employee_name}', '${r.date}')"
+                            onclick="deleteRecord('${r.id}', '${r.employee_name}', '${r.date}')"
                             title="Delete Record"
                         >
                             🗑️

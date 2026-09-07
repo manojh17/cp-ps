@@ -1,12 +1,39 @@
 import os
 import csv
 import io
-import sqlite3
 from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory, Response
+from pymongo import MongoClient, DESCENDING
+from bson.objectid import ObjectId
+
+load_dotenv()
 
 app = Flask(__name__, static_folder=".", static_url_path="")
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "attendance.db")
+
+# MongoDB Configuration
+MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://test:28Z7TCRykBfpigiq@it.5yl39aq.mongodb.net/?appName=IT")
+DB_NAME = os.getenv("DB_NAME", "attendance_db")
+
+mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=8000)
+db = mongo_client[DB_NAME]
+attendance_col = db["attendance"]
+
+# Create index for fast employee and date lookups
+try:
+    attendance_col.create_index([("employee_id", 1), ("date", 1)])
+    attendance_col.create_index([("date", 1)])
+except Exception as e:
+    print("Index creation warning:", e)
+
+# Helper to serialize MongoDB document to JSON-compatible dict
+def serialize_record(doc):
+    if not doc:
+        return None
+    record = dict(doc)
+    record["id"] = str(record["_id"])
+    del record["_id"]
+    return record
 
 # Indian Standard Time (IST is UTC +05:30)
 def get_ist_now():
@@ -40,36 +67,6 @@ def format_duration(seconds):
     else:
         return f"{secs}s"
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def init_db():
-    with get_db() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS attendance (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                employee_id TEXT NOT NULL,
-                employee_name TEXT NOT NULL,
-                date TEXT NOT NULL,
-                check_in_time TEXT NOT NULL,
-                check_in_iso TEXT NOT NULL,
-                check_out_time TEXT,
-                check_out_iso TEXT,
-                working_seconds INTEGER DEFAULT 0,
-                total_hours_formatted TEXT DEFAULT '--',
-                status TEXT NOT NULL,
-                latitude REAL,
-                longitude REAL,
-                distance_meters REAL,
-                created_at TEXT NOT NULL
-            )
-        """)
-        conn.commit()
-
-init_db()
-
 # --- Page Routes ---
 @app.route("/")
 def index():
@@ -97,39 +94,36 @@ def get_time():
         "timestamp": int(now_ist.timestamp())
     })
 
-# --- Employee Portal APIs ---
+# --- Employee Attendance APIs (MongoDB) ---
 @app.route("/api/today", methods=["GET"])
 def get_today_status():
     employee_id = request.args.get("employee_id", "EMP001")
     now_ist = get_ist_now()
     today_str = format_ist_date(now_ist)
 
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM attendance WHERE employee_id = ? AND date = ? ORDER BY id DESC LIMIT 1",
-            (employee_id, today_str)
-        )
-        row = cursor.fetchone()
+    doc = attendance_col.find_one(
+        {"employee_id": employee_id, "date": today_str},
+        sort=[("_id", DESCENDING)]
+    )
 
-        if row:
-            record = dict(row)
-            if record["check_in_iso"] and not record["check_out_iso"]:
-                try:
-                    check_in_dt = datetime.fromisoformat(record["check_in_iso"])
-                    elapsed = max(0, int((now_ist - check_in_dt).total_seconds()))
-                    record["current_elapsed_seconds"] = elapsed
-                except Exception:
-                    record["current_elapsed_seconds"] = 0
-            else:
-                record["current_elapsed_seconds"] = record["working_seconds"]
+    if doc:
+        record = serialize_record(doc)
+        if record.get("check_in_iso") and not record.get("check_out_iso"):
+            try:
+                check_in_dt = datetime.fromisoformat(record["check_in_iso"])
+                elapsed = max(0, int((now_ist - check_in_dt).total_seconds()))
+                record["current_elapsed_seconds"] = elapsed
+            except Exception:
+                record["current_elapsed_seconds"] = 0
+        else:
+            record["current_elapsed_seconds"] = record.get("working_seconds", 0)
 
-            return jsonify({
-                "status": "success",
-                "has_record": True,
-                "record": record,
-                "server_time_iso": now_ist.isoformat()
-            })
+        return jsonify({
+            "status": "success",
+            "has_record": True,
+            "record": record,
+            "server_time_iso": now_ist.isoformat()
+        })
 
     return jsonify({
         "status": "success",
@@ -152,44 +146,39 @@ def check_in():
     check_in_time = format_ist_time(now_ist)
     check_in_iso = now_ist.isoformat()
 
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM attendance WHERE employee_id = ? AND date = ? AND check_out_time IS NULL ORDER BY id DESC LIMIT 1",
-            (employee_id, today_str)
-        )
-        existing = cursor.fetchone()
-        if existing:
-            return jsonify({
-                "status": "error",
-                "message": f"Already checked in today at {existing['check_in_time']} (IST).",
-                "record": dict(existing)
-            }), 400
+    # Prevent duplicate active check-in today
+    existing = attendance_col.find_one(
+        {"employee_id": employee_id, "date": today_str, "check_out_time": None},
+        sort=[("_id", DESCENDING)]
+    )
+    if existing:
+        return jsonify({
+            "status": "error",
+            "message": f"Already checked in today at {existing['check_in_time']} (IST).",
+            "record": serialize_record(existing)
+        }), 400
 
-        cursor.execute("""
-            INSERT INTO attendance (
-                employee_id, employee_name, date,
-                check_in_time, check_in_iso, status,
-                latitude, longitude, distance_meters, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            employee_id,
-            employee_name,
-            today_str,
-            check_in_time,
-            check_in_iso,
-            "Present",
-            latitude,
-            longitude,
-            distance,
-            check_in_iso
-        ))
-        conn.commit()
-        record_id = cursor.lastrowid
+    new_doc = {
+        "employee_id": employee_id,
+        "employee_name": employee_name,
+        "date": today_str,
+        "check_in_time": check_in_time,
+        "check_in_iso": check_in_iso,
+        "check_out_time": None,
+        "check_out_iso": None,
+        "working_seconds": 0,
+        "total_hours_formatted": "--",
+        "status": "Present",
+        "latitude": latitude,
+        "longitude": longitude,
+        "distance_meters": distance,
+        "created_at": check_in_iso
+    }
 
-        cursor.execute("SELECT * FROM attendance WHERE id = ?", (record_id,))
-        record = dict(cursor.fetchone())
-        record["current_elapsed_seconds"] = 0
+    result = attendance_col.insert_one(new_doc)
+    created_doc = attendance_col.find_one({"_id": result.inserted_id})
+    record = serialize_record(created_doc)
+    record["current_elapsed_seconds"] = 0
 
     return jsonify({
         "status": "success",
@@ -208,52 +197,39 @@ def check_out():
     check_out_time = format_ist_time(now_ist)
     check_out_iso = now_ist.isoformat()
 
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM attendance WHERE employee_id = ? AND date = ? AND check_out_time IS NULL ORDER BY id DESC LIMIT 1",
-            (employee_id, today_str)
-        )
-        record = cursor.fetchone()
+    doc = attendance_col.find_one(
+        {"employee_id": employee_id, "date": today_str, "check_out_time": None},
+        sort=[("_id", DESCENDING)]
+    )
 
-        if not record:
-            return jsonify({
-                "status": "error",
-                "message": "No active check-in found for today to check out."
-            }), 400
+    if not doc:
+        return jsonify({
+            "status": "error",
+            "message": "No active check-in found for today to check out."
+        }), 400
 
-        record_id = record["id"]
-        check_in_iso = record["check_in_iso"]
+    check_in_dt = datetime.fromisoformat(doc["check_in_iso"])
+    working_seconds = max(0, int((now_ist - check_in_dt).total_seconds()))
+    duration_formatted = format_duration(working_seconds)
 
-        check_in_dt = datetime.fromisoformat(check_in_iso)
-        working_seconds = max(0, int((now_ist - check_in_dt).total_seconds()))
-        duration_formatted = format_duration(working_seconds)
+    attendance_col.update_one(
+        {"_id": doc["_id"]},
+        {"$set": {
+            "check_out_time": check_out_time,
+            "check_out_iso": check_out_iso,
+            "working_seconds": working_seconds,
+            "total_hours_formatted": duration_formatted,
+            "status": "Completed"
+        }}
+    )
 
-        cursor.execute("""
-            UPDATE attendance
-            SET check_out_time = ?,
-                check_out_iso = ?,
-                working_seconds = ?,
-                total_hours_formatted = ?,
-                status = ?
-            WHERE id = ?
-        """, (
-            check_out_time,
-            check_out_iso,
-            working_seconds,
-            duration_formatted,
-            "Completed",
-            record_id
-        ))
-        conn.commit()
-
-        cursor.execute("SELECT * FROM attendance WHERE id = ?", (record_id,))
-        updated_record = dict(cursor.fetchone())
+    updated_doc = attendance_col.find_one({"_id": doc["_id"]})
+    record = serialize_record(updated_doc)
 
     return jsonify({
         "status": "success",
         "message": f"Checked out successfully at {check_out_time} (IST). Total time: {duration_formatted}.",
-        "record": updated_record,
+        "record": record,
         "server_time_iso": check_out_iso
     })
 
@@ -262,13 +238,11 @@ def get_history():
     employee_id = request.args.get("employee_id", "EMP001")
     limit = int(request.args.get("limit", 15))
 
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM attendance WHERE employee_id = ? ORDER BY id DESC LIMIT ?",
-            (employee_id, limit)
-        )
-        records = [dict(row) for row in cursor.fetchall()]
+    docs = list(attendance_col.find(
+        {"employee_id": employee_id}
+    ).sort("_id", DESCENDING).limit(limit))
+
+    records = [serialize_record(d) for d in docs]
 
     return jsonify({
         "status": "success",
@@ -277,7 +251,7 @@ def get_history():
     })
 
 # =========================================================
-# --- Admin Dashboard APIs ---
+# --- Admin Dashboard APIs (MongoDB) ---
 # =========================================================
 
 @app.route("/api/admin/stats", methods=["GET"])
@@ -285,29 +259,26 @@ def get_admin_stats():
     now_ist = get_ist_now()
     today_str = format_ist_date(now_ist)
 
-    with get_db() as conn:
-        cursor = conn.cursor()
+    # Distinct employees
+    total_employees = len(attendance_col.distinct("employee_id"))
 
-        # Total distinct employees in database
-        cursor.execute("SELECT COUNT(DISTINCT employee_id) FROM attendance")
-        total_employees = cursor.fetchone()[0] or 0
+    # Today's distinct present employees
+    today_present = len(attendance_col.distinct("employee_id", {"date": today_str}))
 
-        # Today's distinct present employees
-        cursor.execute("SELECT COUNT(DISTINCT employee_id) FROM attendance WHERE date = ?", (today_str,))
-        today_present = cursor.fetchone()[0] or 0
+    # Active shifts today (not checked out)
+    active_shifts = attendance_col.count_documents({"date": today_str, "check_out_time": None})
 
-        # Currently active shifts today (not checked out)
-        cursor.execute("SELECT COUNT(*) FROM attendance WHERE date = ? AND check_out_time IS NULL", (today_str,))
-        active_shifts = cursor.fetchone()[0] or 0
+    # Completed shifts today
+    completed_shifts = attendance_col.count_documents({"date": today_str, "check_out_time": {"$ne": None}})
 
-        # Completed shifts today
-        cursor.execute("SELECT COUNT(*) FROM attendance WHERE date = ? AND check_out_time IS NOT NULL", (today_str,))
-        completed_shifts = cursor.fetchone()[0] or 0
-
-        # Average working duration for completed today
-        cursor.execute("SELECT AVG(working_seconds) FROM attendance WHERE date = ? AND check_out_time IS NOT NULL", (today_str,))
-        avg_seconds = cursor.fetchone()[0] or 0
-        avg_hours_str = format_duration(int(avg_seconds)) if avg_seconds else "--"
+    # Average working duration for completed today
+    pipeline = [
+        {"$match": {"date": today_str, "check_out_time": {"$ne": None}}},
+        {"$group": {"_id": None, "avg_seconds": {"$avg": "$working_seconds"}}}
+    ]
+    agg_result = list(attendance_col.aggregate(pipeline))
+    avg_seconds = agg_result[0]["avg_seconds"] if agg_result else 0
+    avg_hours_str = format_duration(int(avg_seconds)) if avg_seconds else "--"
 
     return jsonify({
         "status": "success",
@@ -330,43 +301,39 @@ def get_admin_records():
     now_ist = get_ist_now()
     today_str = format_ist_date(now_ist)
 
-    query = "SELECT * FROM attendance WHERE 1=1"
-    params = []
+    query = {}
 
     if date_filter == "today":
-        query += " AND date = ?"
-        params.append(today_str)
+        query["date"] = today_str
     elif date_filter != "all" and date_filter:
-        query += " AND date = ?"
-        params.append(date_filter)
+        query["date"] = date_filter
 
     if search:
-        query += " AND (employee_id LIKE ? OR employee_name LIKE ?)"
-        params.extend([f"%{search}%", f"%{search}%"])
+        query["$or"] = [
+            {"employee_id": {"$regex": search, "$options": "i"}},
+            {"employee_name": {"$regex": search, "$options": "i"}}
+        ]
 
     if status_filter == "active":
-        query += " AND check_out_time IS NULL"
+        query["check_out_time"] = None
     elif status_filter == "completed":
-        query += " AND check_out_time IS NOT NULL"
+        query["check_out_time"] = {"$ne": None}
 
-    query += " ORDER BY id DESC"
+    docs = list(attendance_col.find(query).sort("_id", DESCENDING))
+    records = []
 
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(query, params)
-        records = [dict(row) for row in cursor.fetchall()]
-
-        # Compute live elapsed seconds for active records
-        for r in records:
-            if not r["check_out_time"] and r["check_in_iso"]:
-                try:
-                    c_in = datetime.fromisoformat(r["check_in_iso"])
-                    elapsed = max(0, int((now_ist - c_in).total_seconds()))
-                    r["live_duration"] = format_duration(elapsed)
-                except Exception:
-                    r["live_duration"] = "--"
-            else:
-                r["live_duration"] = r["total_hours_formatted"]
+    for d in docs:
+        r = serialize_record(d)
+        if not r.get("check_out_time") and r.get("check_in_iso"):
+            try:
+                c_in = datetime.fromisoformat(r["check_in_iso"])
+                elapsed = max(0, int((now_ist - c_in).total_seconds()))
+                r["live_duration"] = format_duration(elapsed)
+            except Exception:
+                r["live_duration"] = "--"
+        else:
+            r["live_duration"] = r.get("total_hours_formatted", "--")
+        records.append(r)
 
     return jsonify({
         "status": "success",
@@ -374,58 +341,54 @@ def get_admin_records():
         "records": records
     })
 
-@app.route("/api/admin/force-checkout/<int:record_id>", methods=["POST"])
+@app.route("/api/admin/force-checkout/<record_id>", methods=["POST"])
 def admin_force_checkout(record_id):
     now_ist = get_ist_now()
     check_out_time = format_ist_time(now_ist)
     check_out_iso = now_ist.isoformat()
 
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM attendance WHERE id = ?", (record_id,))
-        record = cursor.fetchone()
+    try:
+        obj_id = ObjectId(record_id)
+    except Exception:
+        return jsonify({"status": "error", "message": "Invalid record ID format."}), 400
 
-        if not record:
-            return jsonify({"status": "error", "message": "Attendance record not found."}), 404
+    doc = attendance_col.find_one({"_id": obj_id})
+    if not doc:
+        return jsonify({"status": "error", "message": "Attendance record not found."}), 404
 
-        if record["check_out_time"]:
-            return jsonify({"status": "error", "message": "Employee is already checked out."}), 400
+    if doc.get("check_out_time"):
+        return jsonify({"status": "error", "message": "Employee is already checked out."}), 400
 
-        check_in_dt = datetime.fromisoformat(record["check_in_iso"])
-        working_seconds = max(0, int((now_ist - check_in_dt).total_seconds()))
-        duration_formatted = format_duration(working_seconds)
+    check_in_dt = datetime.fromisoformat(doc["check_in_iso"])
+    working_seconds = max(0, int((now_ist - check_in_dt).total_seconds()))
+    duration_formatted = format_duration(working_seconds)
 
-        cursor.execute("""
-            UPDATE attendance
-            SET check_out_time = ?,
-                check_out_iso = ?,
-                working_seconds = ?,
-                total_hours_formatted = ?,
-                status = ?
-            WHERE id = ?
-        """, (
-            check_out_time,
-            check_out_iso,
-            working_seconds,
-            duration_formatted,
-            "Completed",
-            record_id
-        ))
-        conn.commit()
+    attendance_col.update_one(
+        {"_id": obj_id},
+        {"$set": {
+            "check_out_time": check_out_time,
+            "check_out_iso": check_out_iso,
+            "working_seconds": working_seconds,
+            "total_hours_formatted": duration_formatted,
+            "status": "Completed"
+        }}
+    )
 
     return jsonify({
         "status": "success",
         "message": f"Employee force checked out at {check_out_time} (IST). Duration: {duration_formatted}."
     })
 
-@app.route("/api/admin/record/<int:record_id>", methods=["DELETE"])
+@app.route("/api/admin/record/<record_id>", methods=["DELETE"])
 def admin_delete_record(record_id):
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM attendance WHERE id = ?", (record_id,))
-        conn.commit()
-        if cursor.rowcount == 0:
-            return jsonify({"status": "error", "message": "Record not found."}), 404
+    try:
+        obj_id = ObjectId(record_id)
+    except Exception:
+        return jsonify({"status": "error", "message": "Invalid record ID format."}), 400
+
+    result = attendance_col.delete_one({"_id": obj_id})
+    if result.deleted_count == 0:
+        return jsonify({"status": "error", "message": "Record not found."}), 404
 
     return jsonify({"status": "success", "message": "Attendance record deleted successfully."})
 
@@ -435,21 +398,13 @@ def export_csv():
     now_ist = get_ist_now()
     today_str = format_ist_date(now_ist)
 
-    query = "SELECT * FROM attendance"
-    params = []
+    query = {}
     if date_filter == "today":
-        query += " WHERE date = ?"
-        params.append(today_str)
+        query["date"] = today_str
     elif date_filter != "all" and date_filter:
-        query += " WHERE date = ?"
-        params.append(date_filter)
+        query["date"] = date_filter
 
-    query += " ORDER BY id DESC"
-
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(query, params)
-        records = cursor.fetchall()
+    docs = list(attendance_col.find(query).sort("_id", DESCENDING))
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -461,20 +416,21 @@ def export_csv():
         "Status", "Latitude", "Longitude", "Office Distance (m)", "Created At (IST)"
     ])
 
-    for r in records:
+    for d in docs:
+        r = serialize_record(d)
         writer.writerow([
             r["id"],
             r["employee_id"],
             r["employee_name"],
             r["date"],
             r["check_in_time"],
-            r["check_out_time"] or "Active",
-            r["total_hours_formatted"] if r["total_hours_formatted"] != "--" else "In Progress",
+            r.get("check_out_time") or "Active",
+            r.get("total_hours_formatted") if r.get("total_hours_formatted") != "--" else "In Progress",
             r["status"],
-            r["latitude"] or "",
-            r["longitude"] or "",
-            round(r["distance_meters"], 1) if r["distance_meters"] is not None else "",
-            r["created_at"]
+            r.get("latitude") or "",
+            r.get("longitude") or "",
+            round(r["distance_meters"], 1) if r.get("distance_meters") is not None else "",
+            r.get("created_at") or ""
         ])
 
     csv_data = output.getvalue()
@@ -488,5 +444,5 @@ def export_csv():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"Starting Attendance Server on port {port} (Timezone: IST UTC+05:30)...")
+    print(f"Starting Attendance Server with MongoDB on port {port} (Timezone: IST UTC+05:30)...")
     app.run(host="0.0.0.0", port=port, debug=True)
