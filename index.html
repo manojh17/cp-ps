@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Office Attendance System (IST)</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <!-- Toast Notification Container -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <div class="app">
+
+        <!-- Header -->
+        <header class="header">
+            <div class="header-brand">
+                <div class="logo-mark">⚡</div>
+                <div>
+                    <h1>Office Attendance</h1>
+                    <p>Employee Portal • <span class="tz-tag">IST (UTC+05:30)</span></p>
+                </div>
+            </div>
+
+            <div class="header-right">
+                <div class="server-badge" id="serverTimeBadge">
+                    <span class="status-dot green pulse"></span>
+                    <span id="serverStatusText">Syncing IST...</span>
+                </div>
+
+                <div class="profile">
+                    <div class="profile-avatar">M</div>
+                    <div>
+                        <strong>Manojh</strong>
+                        <span>Employee #EMP001</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Dashboard -->
+        <main class="dashboard">
+
+            <!-- Date & Time Card -->
+            <section class="welcome-card">
+                <div>
+                    <div class="card-meta">
+                        <span class="label">INDIAN STANDARD TIME</span>
+                        <span class="tag-pill">Asia/Kolkata</span>
+                    </div>
+                    <h2 id="date">Loading date...</h2>
+                    <p class="time" id="time">--:--:-- --</p>
+                </div>
+
+                <div class="status-badge-container">
+                    <div class="status-badge" id="shiftBadge">
+                        <span class="status-dot"></span>
+                        Office Day
+                    </div>
+                    <span class="server-sub">Strict Server Timestamped</span>
+                </div>
+            </section>
+
+            <!-- Attendance Action Card -->
+            <section class="attendance-card">
+                <div class="card-header">
+                    <div>
+                        <p class="label">ATTENDANCE ACTION</p>
+                        <h2>Mark Your Attendance</h2>
+                    </div>
+
+                    <div class="location-status" id="locationStatusBadge">
+                        <span class="location-dot" id="locationDot"></span>
+                        <span id="locationBadgeText">Checking Location</span>
+                    </div>
+                </div>
+
+                <!-- Location & Geofence Box -->
+                <div class="location-box">
+                    <div class="location-icon">📍</div>
+
+                    <div class="location-info">
+                        <div class="location-info-header">
+                            <div>
+                                <h3>Office Location Geofence</h3>
+                                <p id="location-status">Detecting device GPS coordinates...</p>
+                            </div>
+
+                            <!-- Testing Mode Switch -->
+                            <div class="geo-switch-wrapper">
+                                <label class="switch-label" title="Enable to test check-in even when outside office radius">
+                                    <input type="checkbox" id="demoModeToggle">
+                                    <span class="switch-slider"></span>
+                                    <span class="switch-text">Test Mode (Bypass Radius)</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="coordinates">
+                            <span>Target Office: <strong>12.9130596, 79.1330797</strong></span>
+                            <span>Your Lat: <strong id="latitude">--</strong></span>
+                            <span>Your Lon: <strong id="longitude">--</strong></span>
+                            <span>Accuracy: <strong id="accuracy">--</strong></span>
+                            <span>Distance: <strong id="distanceVal">--</strong></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="attendance-actions">
+                    <button class="btn check-in" id="checkInBtn" onclick="handleCheckIn()">
+                        <span class="btn-icon">⚡</span> CHECK IN
+                    </button>
+
+                    <button class="btn check-out" id="checkOutBtn" onclick="handleCheckOut()" disabled>
+                        <span class="btn-icon">🏁</span> CHECK OUT
+                    </button>
+
+                    <button class="btn btn-secondary" id="refreshBtn" onclick="loadTodayStatus(true)" title="Refresh status from server">
+                        🔄 Refresh
+                    </button>
+                </div>
+
+                <!-- Current Live Status -->
+                <div class="current-status">
+                    <div>
+                        <span class="status-label">CURRENT STATUS</span>
+                        <strong id="attendanceStatus" class="status-text not-checked">Not Checked In</strong>
+                    </div>
+
+                    <div>
+                        <span class="status-label">WORKING TIME (TODAY)</span>
+                        <strong id="workingTime" class="mono-timer">00:00:00</strong>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Today's Summary Metrics -->
+            <section class="summary">
+                <div class="summary-card">
+                    <span>CHECK IN (IST)</span>
+                    <strong id="checkInTime">--:--</strong>
+                    <small id="checkInDate" class="card-hint">Pending</small>
+                </div>
+
+                <div class="summary-card">
+                    <span>CHECK OUT (IST)</span>
+                    <strong id="checkOutTime">--:--</strong>
+                    <small id="checkOutDate" class="card-hint">Pending</small>
+                </div>
+
+                <div class="summary-card">
+                    <span>TOTAL DURATION</span>
+                    <strong id="totalHours">--</strong>
+                    <small id="workingRate" class="card-hint">Calculated on exit</small>
+                </div>
+
+                <div class="summary-card">
+                    <span>DAY STATUS</span>
+                    <strong id="dayStatus">Pending</strong>
+                    <small id="statusHint" class="card-hint">Attendance Record</small>
+                </div>
+            </section>
+
+            <!-- Attendance History / Log Table -->
+            <section class="history-section">
+                <div class="history-header">
+                    <div>
+                        <p class="label">ACTIVITY LOG</p>
+                        <h2>Recent Attendance Records</h2>
+                    </div>
+                    <span class="history-badge" id="recordsCount">0 Records</span>
+                </div>
+
+                <div class="table-container">
+                    <table class="history-table">
+                        <thead>
+                            <tr>
+                                <th>Date (IST)</th>
+                                <th>Check In</th>
+                                <th>Check Out</th>
+                                <th>Duration</th>
+                                <th>Status</th>
+                                <th>Location Verified</th>
+                            </tr>
+                        </thead>
+                        <tbody id="historyTableBody">
+                            <tr>
+                                <td colspan="6" class="empty-state">Loading attendance history...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
