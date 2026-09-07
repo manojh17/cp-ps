@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard • Employee Attendance (IST)</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+</head>
+<body class="admin-body">
+
+    <!-- Toast Notifications -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <div class="app">
+
+        <!-- Admin Header -->
+        <header class="header">
+            <div class="header-brand">
+                <div class="logo-mark admin-logo">🛡️</div>
+                <div>
+                    <h1>Attendance Admin</h1>
+                    <p>Management Portal • <span class="tz-tag">IST (UTC+05:30)</span></p>
+                </div>
+            </div>
+
+            <div class="header-right">
+                <a href="/" class="nav-switch-btn" title="Go to Employee Attendance View">
+                    ← Employee Portal
+                </a>
+
+                <div class="server-badge" id="serverTimeBadge">
+                    <span class="status-dot green pulse"></span>
+                    <span id="serverStatusText">IST Clock Active</span>
+                </div>
+
+                <div class="profile">
+                    <div class="profile-avatar admin-avatar">AD</div>
+                    <div>
+                        <strong>Admin Portal</strong>
+                        <span>HR & Operations</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Admin Dashboard -->
+        <main class="dashboard admin-dashboard">
+
+            <!-- Welcome & Time Banner -->
+            <section class="welcome-card admin-welcome">
+                <div>
+                    <div class="card-meta">
+                        <span class="label">EXECUTIVE ATTENDANCE OVERVIEW</span>
+                        <span class="tag-pill">Indian Standard Time</span>
+                    </div>
+                    <h2 id="adminDate">Loading date...</h2>
+                    <p class="time" id="adminTime">--:--:-- --</p>
+                </div>
+
+                <div class="quick-admin-actions">
+                    <button class="btn btn-secondary" onclick="exportCSV()">
+                        📥 Export to CSV
+                    </button>
+                    <button class="btn btn-primary" onclick="loadAllAdminData(true)">
+                        🔄 Refresh Data
+                    </button>
+                </div>
+            </section>
+
+            <!-- Metrics Cards Grid -->
+            <section class="admin-metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-icon blue">👥</div>
+                    <div class="metric-details">
+                        <span class="metric-label">TOTAL EMPLOYEES</span>
+                        <strong class="metric-val" id="metricTotalEmployees">--</strong>
+                        <span class="metric-sub">Registered Staff</span>
+                    </div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-icon green">📍</div>
+                    <div class="metric-details">
+                        <span class="metric-label">PRESENT TODAY</span>
+                        <strong class="metric-val text-green" id="metricTodayPresent">--</strong>
+                        <span class="metric-sub" id="metricPresentSub">Active & Completed</span>
+                    </div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-icon amber">⏳</div>
+                    <div class="metric-details">
+                        <span class="metric-label">ACTIVE SHIFTS NOW</span>
+                        <strong class="metric-val text-amber" id="metricActiveShifts">--</strong>
+                        <span class="metric-sub">Currently Checked In</span>
+                    </div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-icon purple">🏁</div>
+                    <div class="metric-details">
+                        <span class="metric-label">COMPLETED SHIFTS</span>
+                        <strong class="metric-val" id="metricCompletedShifts">--</strong>
+                        <span class="metric-sub">Checked Out Today</span>
+                    </div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-icon teal">⏱️</div>
+                    <div class="metric-details">
+                        <span class="metric-label">AVG WORK DURATION</span>
+                        <strong class="metric-val" id="metricAvgHours">--</strong>
+                        <span class="metric-sub">Completed Shifts</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Table & Filters Section -->
+            <section class="history-section admin-table-section">
+
+                <!-- Filter & Control Toolbar -->
+                <div class="admin-toolbar">
+                    <div class="toolbar-left">
+                        <div class="search-input-wrapper">
+                            <span class="search-icon">🔍</span>
+                            <input
+                                type="text"
+                                id="adminSearchInput"
+                                placeholder="Search by employee name or ID..."
+                                oninput="handleSearchDebounce()"
+                            >
+                        </div>
+
+                        <div class="date-filter-wrapper">
+                            <label for="adminDateFilter" class="filter-label">Date (IST):</label>
+                            <input
+                                type="date"
+                                id="adminDateFilter"
+                                class="date-input"
+                                onchange="handleFilterChange()"
+                            >
+                            <button class="preset-btn active" id="btnTodayFilter" onclick="setFilterDate('today')">Today</button>
+                            <button class="preset-btn" id="btnAllFilter" onclick="setFilterDate('all')">All Dates</button>
+                        </div>
+                    </div>
+
+                    <div class="toolbar-right">
+                        <select id="adminStatusFilter" class="status-select" onchange="handleFilterChange()">
+                            <option value="all">All Statuses</option>
+                            <option value="active">Active Shifts Only</option>
+                            <option value="completed">Completed Only</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Table Header Count -->
+                <div class="history-header">
+                    <div>
+                        <p class="label">ATTENDANCE LOGS</p>
+                        <h2>Employee Records</h2>
+                    </div>
+                    <div class="table-actions-header">
+                        <span class="history-badge" id="adminRecordsCount">0 Records</span>
+                    </div>
+                </div>
+
+                <!-- Data Table -->
+                <div class="table-container">
+                    <table class="history-table admin-table">
+                        <thead>
+                            <tr>
+                                <th>Employee</th>
+                                <th>Date (IST)</th>
+                                <th>Check In</th>
+                                <th>Check Out</th>
+                                <th>Duration</th>
+                                <th>Location Geofence</th>
+                                <th>Status</th>
+                                <th style="text-align: right;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="adminTableBody">
+                            <tr>
+                                <td colspan="8" class="empty-state">Loading attendance records...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+            </section>
+
+            <!-- Office Geofence Information Bar -->
+            <section class="geofence-info-card">
+                <div class="geofence-info-left">
+                    <span class="geofence-badge-icon">📍</span>
+                    <div>
+                        <h4>Office Geofence Compliance</h4>
+                        <p>Target Coordinates: <strong>12.9130596, 79.1330797</strong> • Radius: <strong>100 meters</strong> • Timezone: <strong>Asia/Kolkata (IST UTC+05:30)</strong></p>
+                    </div>
+                </div>
+                <div class="geofence-info-right">
+                    <span class="status-pill verified">Strict Server Checked</span>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <script src="admin.js"></script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 const OFFICE_LOCATION = {
     latitude: 12.9130596,
     longitude: 79.1330797,
-    radius: 100 // meters
+    radius: 200 // meters
 };
 
 const EMPLOYEE = {
