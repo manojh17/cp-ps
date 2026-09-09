@@ -1,81 +1,62 @@
-// Configuration & Office Geofence (Defaults from variables, synced dynamically from DB)
-let OFFICE_LOCATION = {
-    latitude: 12.912985,
-    longitude: 79.132010,
+// Office Attendance Application Logic
+
+let OFFICE_CONFIG = {
     radius: 200 // meters
 };
 
-// Sync office location from database
+let currentEmployee = {
+    id: "EMP1001",
+    name: "Staff Member",
+    role: "Employee",
+    monthly_salary: 0
+};
+
+let employeeToken = localStorage.getItem("employee_token") || "";
+let userCoordinates = null;
+let workingTimerInterval = null;
+let checkInDateTime = null;
+let serverTimeOffsetMs = 0;
+
+// Auth Header Helper for Employee Token
+function getAuthHeaders() {
+    const headers = { "Content-Type": "application/json" };
+    if (employeeToken) {
+        headers["Authorization"] = `Bearer ${employeeToken}`;
+        headers["X-Employee-Token"] = employeeToken;
+    }
+    return headers;
+}
+
+// Fetch office location config from database (radius only for employee)
 async function fetchOfficeLocation() {
     try {
         const res = await fetch("/api/office-location");
         if (res.ok) {
             const data = await res.json();
-            if (data.location) {
-                OFFICE_LOCATION.latitude = Number(data.location.latitude);
-                OFFICE_LOCATION.longitude = Number(data.location.longitude);
-                OFFICE_LOCATION.radius = Number(data.location.radius);
-
-                const targetEl = document.getElementById("targetOfficeCoords");
-                if (targetEl) {
-                    targetEl.textContent = `${OFFICE_LOCATION.latitude.toFixed(6)}, ${OFFICE_LOCATION.longitude.toFixed(6)}`;
-                }
-
-                // Recalculate distance if user coords already captured
-                if (userCoordinates) {
-                    const distance = calculateDistance(
-                        userCoordinates.latitude, userCoordinates.longitude,
-                        OFFICE_LOCATION.latitude, OFFICE_LOCATION.longitude
-                    );
-                    userCoordinates.distance = distance;
-                    const distVal = document.getElementById("distanceVal");
-                    if (distVal) distVal.textContent = `${distance.toFixed(0)} m`;
-
-                    const locationStatus = document.getElementById("location-status");
-                    const badgeText = document.getElementById("locationBadgeText");
-                    const dot = document.getElementById("locationDot");
-
-                    const isInside = distance <= OFFICE_LOCATION.radius;
-                    if (isInside) {
-                        if (locationStatus) locationStatus.textContent = `Within office perimeter (${distance.toFixed(0)}m away)`;
-                        if (badgeText) badgeText.textContent = "Inside Office";
-                        if (dot) dot.className = "location-dot green";
-                    } else {
-                        if (locationStatus) locationStatus.textContent = `Outside office bounds (${distance.toFixed(0)}m from office)`;
-                        if (badgeText) badgeText.textContent = "Outside Radius";
-                        if (dot) dot.className = "location-dot orange";
-                    }
-                }
+            if (data.location && data.location.radius) {
+                OFFICE_CONFIG.radius = Number(data.location.radius);
+            }
+            if (userCoordinates) {
+                evaluateGeofence(userCoordinates);
             }
         }
     } catch (e) {
-        console.warn("Could not fetch office location from DB:", e);
+        console.warn("Could not fetch office config:", e);
     }
 }
 
-const EMPLOYEE = {
-    id: "EMP001",
-    name: "Manojh"
-};
-
-let userCoordinates = null;
-let workingTimerInterval = null;
-let checkInDateTime = null;
-let serverTimeOffsetMs = 0; // Offset between client clock and server IST clock
-
-// --- Toast Notification System ---
+// Toast notification helper
 function showToast(message, type = "info", duration = 4000) {
     const container = document.getElementById("toastContainer");
     if (!container) return;
 
     const toast = document.createElement("div");
     toast.className = `toast ${type}`;
-
-    const icon = type === "success" ? "✅" : type === "error" ? "❌" : "ℹ️";
+    const icon = type === "success" ? "✅" : type === "error" ? "❌" : type === "warning" ? "⚠️" : "ℹ️";
 
     toast.innerHTML = `
         <span style="font-size: 16px;">${icon}</span>
-        <div class="toast-message">${message}</div>
+        <div>${message}</div>
     `;
 
     container.appendChild(toast);
@@ -86,12 +67,25 @@ function showToast(message, type = "info", duration = 4000) {
     }, duration);
 }
 
-// --- Live Clock (Indian Standard Time) ---
+// Haversine Distance Formula
+function calculateDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371000;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * Math.PI / 180) *
+        Math.cos(lat2 * Math.PI / 180) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+}
+
+// Live IST Clock
 function updateLiveClock() {
-    // Current time adjusted with server offset to maintain IST accuracy
     const now = new Date(Date.now() + serverTimeOffsetMs);
 
-    // Format strictly for Indian Standard Time (en-IN)
     const dateStr = now.toLocaleDateString("en-IN", {
         timeZone: "Asia/Kolkata",
         weekday: "long",
@@ -115,7 +109,6 @@ function updateLiveClock() {
     if (timeElem) timeElem.textContent = `${timeStr} IST`;
 }
 
-// Sync server time to guarantee IST precision regardless of client device time
 async function syncServerTime() {
     try {
         const res = await fetch("/api/time");
@@ -124,31 +117,177 @@ async function syncServerTime() {
             const serverMs = new Date(data.iso).getTime();
             serverTimeOffsetMs = serverMs - Date.now();
             const badge = document.getElementById("serverStatusText");
-            if (badge) badge.textContent = "Server Synced (IST)";
+            if (badge) badge.textContent = "IST Synced";
         }
     } catch (e) {
         console.warn("Time sync error:", e);
     }
 }
 
-// --- Haversine Distance Calculation ---
-function calculateDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371000; // Earth radius in meters
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
+// --- Persistent One-Time Authentication Management ---
+async function checkEmployeeAuth() {
+    if (!employeeToken) {
+        showEmployeeLoginModal();
+        return;
+    }
 
-    const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(lat1 * Math.PI / 180) *
-        Math.cos(lat2 * Math.PI / 180) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
+    try {
+        const res = await fetch("/api/employee/me", {
+            headers: getAuthHeaders()
+        });
+        const data = await res.json();
 
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
+        if (res.ok && data.status === "success" && data.employee) {
+            onEmployeeAuthSuccess(data.employee, employeeToken);
+        } else {
+            // Token invalid or revoked
+            localStorage.removeItem("employee_token");
+            localStorage.removeItem("cached_employee");
+            employeeToken = "";
+            showEmployeeLoginModal();
+        }
+    } catch (e) {
+        console.warn("Auth check connection error, attempting cached profile:", e);
+        const cached = localStorage.getItem("cached_employee");
+        if (cached) {
+            try {
+                onEmployeeAuthSuccess(JSON.parse(cached), employeeToken, false);
+            } catch (err) {
+                showEmployeeLoginModal();
+            }
+        } else {
+            showEmployeeLoginModal();
+        }
+    }
 }
 
-// --- Working Time Live Counter ---
+function showEmployeeLoginModal() {
+    const modal = document.getElementById("employeeLoginModal");
+    const badge = document.getElementById("employeeUserBadge");
+    if (modal) modal.style.display = "flex";
+    if (badge) badge.style.display = "none";
+    const idInput = document.getElementById("loginEmpId");
+    if (idInput) idInput.focus();
+}
+
+function hideEmployeeLoginModal() {
+    const modal = document.getElementById("employeeLoginModal");
+    if (modal) modal.style.display = "none";
+}
+
+async function handleEmployeeLogin(event) {
+    event.preventDefault();
+    const idInput = document.getElementById("loginEmpId");
+    const passInput = document.getElementById("loginEmpPassword");
+    const errorMsg = document.getElementById("employeeLoginErrorMsg");
+    const btnSubmit = document.getElementById("btnEmpLoginSubmit");
+
+    const employee_id = idInput.value.trim().toUpperCase();
+    const password = passInput.value.trim();
+
+    if (!employee_id || !password) return;
+
+    btnSubmit.disabled = true;
+    btnSubmit.textContent = "Verifying...";
+    if (errorMsg) errorMsg.style.display = "none";
+
+    try {
+        const res = await fetch("/api/employee/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ employee_id, password })
+        });
+
+        const data = await res.json();
+
+        if (res.ok && data.status === "success") {
+            employeeToken = data.token;
+            localStorage.setItem("employee_token", employeeToken);
+            localStorage.setItem("cached_employee", JSON.stringify(data.employee));
+            showToast(data.message || "Signed in successfully.", "success");
+            passInput.value = "";
+            onEmployeeAuthSuccess(data.employee, employeeToken);
+        } else {
+            if (errorMsg) {
+                errorMsg.textContent = data.message || "Invalid Employee ID or password.";
+                errorMsg.style.display = "block";
+            }
+            passInput.value = "";
+            passInput.focus();
+        }
+    } catch (err) {
+        console.error("Login error:", err);
+        if (errorMsg) {
+            errorMsg.textContent = "Unable to connect to server. Please try again.";
+            errorMsg.style.display = "block";
+        }
+    } finally {
+        btnSubmit.disabled = false;
+        btnSubmit.textContent = "⚡ Sign In";
+    }
+}
+
+async function handleEmployeeLogout() {
+    try {
+        await fetch("/api/employee/logout", {
+            method: "POST",
+            headers: getAuthHeaders()
+        });
+    } catch (e) {
+        console.warn("Logout notification error:", e);
+    }
+
+    employeeToken = "";
+    localStorage.removeItem("employee_token");
+    localStorage.removeItem("cached_employee");
+    stopWorkingTimer();
+    showToast("You have been signed out.", "info");
+
+    renderTodayStatus(null);
+    const tbody = document.getElementById("historyTableBody");
+    if (tbody) tbody.innerHTML = `<tr><td colspan="5" class="empty-state">Please sign in to view attendance records.</td></tr>`;
+
+    showEmployeeLoginModal();
+}
+
+function onEmployeeAuthSuccess(emp, token, shouldLoadStatus = true) {
+    hideEmployeeLoginModal();
+    setCurrentEmployee(emp);
+
+    const badge = document.getElementById("employeeUserBadge");
+    const headerName = document.getElementById("headerEmpName");
+    const headerId = document.getElementById("headerEmpId");
+
+    if (badge) badge.style.display = "flex";
+    if (headerName) headerName.textContent = emp.name;
+    if (headerId) headerId.textContent = emp.employee_id;
+
+    if (shouldLoadStatus) {
+        loadTodayStatus();
+    }
+}
+
+function setCurrentEmployee(emp) {
+    currentEmployee = {
+        id: emp.employee_id,
+        name: emp.name,
+        role: emp.role || "Staff Member",
+        monthly_salary: emp.monthly_salary || 0
+    };
+
+    const nameEl = document.getElementById("displayEmpName");
+    const roleEl = document.getElementById("displayEmpRole");
+    const salEl = document.getElementById("displayEmpSalary");
+
+    if (nameEl) nameEl.textContent = currentEmployee.name;
+    if (roleEl) roleEl.textContent = `${currentEmployee.role} • #${currentEmployee.id}`;
+    if (salEl) {
+        const salaryFormatted = Number(currentEmployee.monthly_salary).toLocaleString("en-IN");
+        salEl.textContent = `Salary: ₹${salaryFormatted} / mo`;
+    }
+}
+
+// Live Working Timer
 function startWorkingTimer(startTimeIso) {
     stopWorkingTimer();
     checkInDateTime = new Date(startTimeIso);
@@ -178,69 +317,139 @@ function stopWorkingTimer() {
     }
 }
 
-// --- Location Detection ---
-function initLocationWatcher() {
+// Accuracy Level Formatter (High / Medium / Low)
+function formatAccuracyLevel(accuracyMeters) {
+    if (accuracyMeters === null || accuracyMeters === undefined || isNaN(accuracyMeters)) {
+        return { text: "Detecting...", badgeClass: "acc-unknown" };
+    }
+    const acc = Number(accuracyMeters);
+    if (acc <= 25) {
+        return { text: "High", badgeClass: "acc-high" };
+    } else if (acc <= 70) {
+        return { text: "Medium", badgeClass: "acc-medium" };
+    } else {
+        return { text: "Low", badgeClass: "acc-low" };
+    }
+}
+
+// Fast & Accurate Geolocation Acquisition
+function getFreshCoordinates(timeoutMs = 7000) {
+    return new Promise((resolve, reject) => {
+        if (!navigator.geolocation) {
+            reject(new Error("Geolocation not supported by browser."));
+            return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+            pos => {
+                const lat = pos.coords.latitude;
+                const lon = pos.coords.longitude;
+                const acc = pos.coords.accuracy;
+
+                const coords = { latitude: lat, longitude: lon, accuracy: acc };
+                userCoordinates = coords;
+                updateLocationUI(coords);
+                resolve(coords);
+            },
+            err => {
+                reject(err);
+            },
+            {
+                enableHighAccuracy: true,
+                timeout: timeoutMs,
+                maximumAge: 0 // Force fresh reading
+            }
+        );
+    });
+}
+
+async function evaluateGeofence(coords) {
     const locationStatus = document.getElementById("location-status");
     const badgeText = document.getElementById("locationBadgeText");
     const dot = document.getElementById("locationDot");
+    const perimeterStatus = document.getElementById("perimeterStatus");
 
-    if (!navigator.geolocation) {
-        if (locationStatus) locationStatus.textContent = "Geolocation not supported by browser.";
-        if (badgeText) badgeText.textContent = "GPS Unavailable";
-        if (dot) dot.className = "location-dot red";
-        return;
-    }
+    try {
+        const res = await fetch("/api/check-geofence", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ latitude: coords.latitude, longitude: coords.longitude })
+        });
+        const data = await res.json();
 
-    navigator.geolocation.getCurrentPosition(
-        (position) => {
-            const lat = position.coords.latitude;
-            const lon = position.coords.longitude;
-            const acc = position.coords.accuracy;
-
-            userCoordinates = { latitude: lat, longitude: lon, accuracy: acc };
-
-            document.getElementById("latitude").textContent = lat.toFixed(6);
-            document.getElementById("longitude").textContent = lon.toFixed(6);
-            document.getElementById("accuracy").textContent = `±${acc.toFixed(0)}m`;
-
-            const distance = calculateDistance(
-                lat, lon,
-                OFFICE_LOCATION.latitude, OFFICE_LOCATION.longitude
-            );
-
-            userCoordinates.distance = distance;
-            document.getElementById("distanceVal").textContent = `${distance.toFixed(0)} m`;
-
-            const isInside = distance <= OFFICE_LOCATION.radius;
-            if (isInside) {
-                if (locationStatus) locationStatus.textContent = `Within office perimeter (${distance.toFixed(0)}m away)`;
-                if (badgeText) badgeText.textContent = "Inside Office";
-                if (dot) dot.className = "location-dot green";
-            } else {
-                if (locationStatus) locationStatus.textContent = `Outside office bounds (${distance.toFixed(0)}m from office)`;
-                if (badgeText) badgeText.textContent = "Outside Radius";
-                if (dot) dot.className = "location-dot orange";
+        if (res.ok && data.is_inside) {
+            if (locationStatus) locationStatus.textContent = "Within designated office premises.";
+            if (badgeText) badgeText.textContent = "Inside Office";
+            if (dot) dot.className = "status-dot green";
+            if (perimeterStatus) {
+                perimeterStatus.textContent = "In Range";
+                perimeterStatus.style.color = "var(--success)";
             }
-        },
-        (error) => {
-            console.warn("Location error:", error);
-            if (locationStatus) locationStatus.textContent = "Unable to fetch GPS. You can enable Test Mode to simulate.";
-            if (badgeText) badgeText.textContent = "GPS Off / Denied";
-            if (dot) dot.className = "location-dot red";
-        },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
-    );
+        } else {
+            if (locationStatus) locationStatus.textContent = "Outside designated office premises. Punch-in allowed only within office.";
+            if (badgeText) badgeText.textContent = "Outside Office";
+            if (dot) dot.className = "status-dot orange";
+            if (perimeterStatus) {
+                perimeterStatus.textContent = "Out of Range";
+                perimeterStatus.style.color = "var(--warning)";
+            }
+        }
+    } catch (e) {
+        console.warn("Geofence evaluation warning:", e);
+    }
 }
 
-// --- Fetch Today's Attendance Status from Server ---
+function updateLocationUI(coords) {
+    const gpsStatus = document.getElementById("gpsStatus");
+    const accEl = document.getElementById("accuracyBadge");
+
+    if (gpsStatus) {
+        gpsStatus.textContent = "Active";
+        gpsStatus.style.color = "var(--success)";
+    }
+
+    if (accEl && coords.accuracy !== null && coords.accuracy !== undefined) {
+        const lvl = formatAccuracyLevel(coords.accuracy);
+        accEl.textContent = lvl.text;
+        accEl.className = `acc-badge ${lvl.badgeClass}`;
+    }
+
+    evaluateGeofence(coords);
+}
+
+function initLocationWatcher() {
+    getFreshCoordinates().catch(err => {
+        console.warn("Initial GPS acquisition notice:", err.message);
+        const locationStatus = document.getElementById("location-status");
+        const badgeText = document.getElementById("locationBadgeText");
+        const dot = document.getElementById("locationDot");
+        const gpsStatus = document.getElementById("gpsStatus");
+        const accEl = document.getElementById("accuracyBadge");
+
+        if (gpsStatus) {
+            gpsStatus.textContent = "Pending Permission";
+            gpsStatus.style.color = "var(--warning)";
+        }
+        if (accEl) accEl.textContent = "--";
+        if (locationStatus) locationStatus.textContent = "GPS permission required. Please enable location on your device to punch in.";
+        if (badgeText) badgeText.textContent = "GPS Pending";
+        if (dot) dot.className = "status-dot orange";
+    });
+}
+
+// Fetch Today's Attendance State
 async function loadTodayStatus(notify = false) {
+    if (!employeeToken) return;
+
     try {
-        const res = await fetch(`/api/today?employee_id=${EMPLOYEE.id}`);
+        const res = await fetch(`/api/today?employee_id=${currentEmployee.id}`, {
+            headers: getAuthHeaders()
+        });
         const data = await res.json();
 
         if (res.ok && data.status === "success") {
             renderTodayStatus(data.record);
-            if (notify) showToast("Attendance status refreshed from server (IST).", "info");
+            if (notify) showToast("Status refreshed from server.", "info");
         }
     } catch (e) {
         console.error("Failed to load today status:", e);
@@ -250,7 +459,6 @@ async function loadTodayStatus(notify = false) {
     loadHistory();
 }
 
-// --- Render Today's Attendance State ---
 function renderTodayStatus(record) {
     const checkInBtn = document.getElementById("checkInBtn");
     const checkOutBtn = document.getElementById("checkOutBtn");
@@ -263,7 +471,6 @@ function renderTodayStatus(record) {
     const checkOutDateEl = document.getElementById("checkOutDate");
 
     if (!record) {
-        // No attendance marked yet today
         checkInBtn.disabled = false;
         checkOutBtn.disabled = true;
         attendanceStatus.textContent = "Not Checked In";
@@ -279,12 +486,10 @@ function renderTodayStatus(record) {
         return;
     }
 
-    // Has checked in
     checkInTimeEl.textContent = record.check_in_time;
     checkInDateEl.textContent = `${record.date} (IST)`;
 
     if (record.check_out_time) {
-        // Already checked out (Completed for the day)
         checkInBtn.disabled = true;
         checkOutBtn.disabled = true;
         attendanceStatus.textContent = "Completed (Checked Out)";
@@ -294,7 +499,6 @@ function renderTodayStatus(record) {
         totalHoursEl.textContent = record.total_hours_formatted || "--";
         dayStatusEl.textContent = "Completed";
 
-        // Display final working duration in timer box
         const totalSec = record.working_seconds || 0;
         const hours = String(Math.floor(totalSec / 3600)).padStart(2, "0");
         const minutes = String(Math.floor((totalSec % 3600) / 60)).padStart(2, "0");
@@ -302,7 +506,6 @@ function renderTodayStatus(record) {
         document.getElementById("workingTime").textContent = `${hours}:${minutes}:${seconds}`;
         stopWorkingTimer();
     } else {
-        // Currently Checked In & Working
         checkInBtn.disabled = true;
         checkOutBtn.disabled = false;
         attendanceStatus.textContent = "Currently Checked In";
@@ -312,70 +515,107 @@ function renderTodayStatus(record) {
         totalHoursEl.textContent = "In Progress";
         dayStatusEl.textContent = "Present";
 
-        // Start live ticking timer from check-in ISO
         startWorkingTimer(record.check_in_iso);
     }
 }
 
-// --- Check In Action ---
+// Punch In Handler (Live Level: Strict GPS & Geofence Verification)
 async function handleCheckIn() {
-    const isDemoMode = document.getElementById("demoModeToggle").checked;
+    if (!employeeToken) {
+        showEmployeeLoginModal();
+        return;
+    }
 
-    // Check geofence
-    if (userCoordinates && userCoordinates.distance > OFFICE_LOCATION.radius && !isDemoMode) {
-        showToast(`You are ${userCoordinates.distance.toFixed(0)}m away. Attendance requires being inside 100m office area (or turn on Test Mode).`, "warning", 6000);
+    const checkInBtn = document.getElementById("checkInBtn");
+    checkInBtn.disabled = true;
+    checkInBtn.innerHTML = `<span>⏳</span> Acquiring GPS...`;
+
+    let coords = null;
+    try {
+        coords = await getFreshCoordinates(6000);
+    } catch (e) {
+        console.warn("GPS capture error:", e);
+        showToast("GPS location is required to punch in. Please enable location on your device.", "warning", 5000);
+        checkInBtn.disabled = false;
+        checkInBtn.innerHTML = `<span>⚡</span> PUNCH IN`;
+        return;
+    }
+
+    if (!coords || coords.latitude === null || coords.longitude === null) {
+        showToast("Unable to obtain GPS coordinates. Please ensure location is enabled.", "warning", 5000);
+        checkInBtn.disabled = false;
+        checkInBtn.innerHTML = `<span>⚡</span> PUNCH IN`;
         return;
     }
 
     const payload = {
-        employee_id: EMPLOYEE.id,
-        employee_name: EMPLOYEE.name,
-        latitude: userCoordinates ? userCoordinates.latitude : OFFICE_LOCATION.latitude,
-        longitude: userCoordinates ? userCoordinates.longitude : OFFICE_LOCATION.longitude,
-        distance: userCoordinates ? userCoordinates.distance : 0
+        employee_id: currentEmployee.id,
+        employee_name: currentEmployee.name,
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        accuracy: coords.accuracy
     };
 
-    const checkInBtn = document.getElementById("checkInBtn");
-    checkInBtn.disabled = true;
-    checkInBtn.textContent = "Processing...";
+    checkInBtn.innerHTML = `<span>⏳</span> Verifying Location...`;
 
     try {
         const res = await fetch("/api/check-in", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: getAuthHeaders(),
             body: JSON.stringify(payload)
         });
 
         const data = await res.json();
 
         if (res.ok && data.status === "success") {
-            showToast(`✅ Checked in at ${data.record.check_in_time} (IST)`, "success");
+            showToast(`✅ Checked in successfully at ${data.record.check_in_time} (IST)`, "success");
             renderTodayStatus(data.record);
             loadHistory();
         } else {
-            showToast(data.message || "Failed to check in.", "error");
+            showToast(data.message || "Failed to check in.", "error", 5000);
             loadTodayStatus();
         }
     } catch (e) {
-        console.error("Check-in request error:", e);
+        console.error("Check-in error:", e);
         showToast("Server connection error during check-in.", "error");
         checkInBtn.disabled = false;
     } finally {
-        checkInBtn.innerHTML = '<span class="btn-icon">⚡</span> CHECK IN';
+        checkInBtn.innerHTML = `<span>⚡</span> PUNCH IN`;
     }
 }
 
-// --- Check Out Action ---
+// Punch Out Handler (Live Level: Records Fresh GPS & Finalizes Shift)
 async function handleCheckOut() {
+    if (!employeeToken) {
+        showEmployeeLoginModal();
+        return;
+    }
+
     const checkOutBtn = document.getElementById("checkOutBtn");
     checkOutBtn.disabled = true;
-    checkOutBtn.textContent = "Processing...";
+    checkOutBtn.innerHTML = `<span>⏳</span> Acquiring GPS...`;
+
+    let coords = null;
+    try {
+        coords = await getFreshCoordinates(5000);
+    } catch (e) {
+        console.warn("GPS capture warning during punch out:", e);
+    }
+
+    const payload = {
+        employee_id: currentEmployee.id,
+        latitude: coords ? coords.latitude : null,
+        longitude: coords ? coords.longitude : null,
+        accuracy: coords ? coords.accuracy : null
+    };
+
+    checkOutBtn.innerHTML = `<span>⏳</span> Punching Out...`;
 
     try {
         const res = await fetch("/api/check-out", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ employee_id: EMPLOYEE.id })
+            headers: getAuthHeaders(),
+            body: JSON.stringify(payload)
         });
 
         const data = await res.json();
@@ -389,18 +629,22 @@ async function handleCheckOut() {
             loadTodayStatus();
         }
     } catch (e) {
-        console.error("Check-out request error:", e);
+        console.error("Check-out error:", e);
         showToast("Server connection error during check-out.", "error");
         checkOutBtn.disabled = false;
     } finally {
-        checkOutBtn.innerHTML = '<span class="btn-icon">🏁</span> CHECK OUT';
+        checkOutBtn.innerHTML = `<span>🏁</span> PUNCH OUT`;
     }
 }
 
-// --- Load Recent Attendance History ---
+// Attendance History Loader (Employee View: Privacy Protected)
 async function loadHistory() {
+    if (!employeeToken) return;
+
     try {
-        const res = await fetch(`/api/history?employee_id=${EMPLOYEE.id}`);
+        const res = await fetch(`/api/history?employee_id=${currentEmployee.id}`, {
+            headers: getAuthHeaders()
+        });
         if (!res.ok) return;
 
         const data = await res.json();
@@ -413,43 +657,59 @@ async function loadHistory() {
         if (!tbody) return;
 
         if (records.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No attendance records found yet. Check in to create your first record!</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No attendance records found yet for ${currentEmployee.name}. Punch in to start!</td></tr>`;
             return;
         }
 
         tbody.innerHTML = records.map(r => {
-            const statusClass = r.status === "Completed" ? "completed" : "present";
-            const distText = r.distance_meters !== null ? `${Math.round(r.distance_meters)}m` : "Verified";
+            const isCompleted = r.status === "Completed";
+            const statusBadgeClass = isCompleted ? "badge-success" : "badge-warning";
+
+            // In accuracy level
+            const pIn = r.punch_in || {};
+            const inAccLevel = pIn.accuracy_level || (pIn.accuracy ? formatAccuracyLevel(pIn.accuracy).text : "Standard");
+            const inAccClass = inAccLevel.toLowerCase() === "high" ? "badge-success" : (inAccLevel.toLowerCase() === "medium" ? "badge-warning" : "badge-info");
+
+            // Out accuracy level
+            const pOut = r.punch_out || {};
+            const outAccLevel = pOut.accuracy_level || (pOut.accuracy ? formatAccuracyLevel(pOut.accuracy).text : "Standard");
+            const outAccClass = outAccLevel.toLowerCase() === "high" ? "badge-success" : (outAccLevel.toLowerCase() === "medium" ? "badge-warning" : "badge-info");
 
             return `
                 <tr>
                     <td><strong>${r.date}</strong></td>
-                    <td class="time-cell">${r.check_in_time} <span style="font-size:10px;color:#64748b;">IST</span></td>
-                    <td class="time-cell">${r.check_out_time ? `${r.check_out_time} <span style="font-size:10px;color:#64748b;">IST</span>` : '<span style="color:#f59e0b;">In Progress...</span>'}</td>
+                    <td>
+                        <div><strong>${r.check_in_time}</strong> <span style="font-size: 10px; color: var(--text-light);">IST</span></div>
+                        <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">
+                            <span class="badge ${inAccClass}" style="font-size: 10px; padding: 2px 6px;">Accuracy: ${inAccLevel}</span>
+                        </div>
+                    </td>
+                    <td>
+                        ${r.check_out_time ? `
+                            <div><strong>${r.check_out_time}</strong> <span style="font-size: 10px; color: var(--text-light);">IST</span></div>
+                            <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">
+                                <span class="badge ${outAccClass}" style="font-size: 10px; padding: 2px 6px;">Accuracy: ${outAccLevel}</span>
+                            </div>
+                        ` : `<span class="badge badge-warning">Active In Progress</span>`}
+                    </td>
                     <td><strong>${r.total_hours_formatted || '--'}</strong></td>
-                    <td><span class="history-badge-status ${statusClass}">${r.status}</span></td>
-                    <td>📍 <span style="font-size: 12px; color: #475569;">${distText}</span></td>
+                    <td><span class="badge ${statusBadgeClass}">${r.status}</span></td>
                 </tr>
             `;
         }).join("");
+
     } catch (e) {
         console.error("Failed to load history:", e);
     }
 }
 
-// --- Initialization on page load ---
+// Initialize on DOM load
 document.addEventListener("DOMContentLoaded", () => {
-    // Fetch dynamic office coordinates from DB
     fetchOfficeLocation();
-
-    // Start live clock and sync with server IST
     updateLiveClock();
     setInterval(updateLiveClock, 1000);
     syncServerTime();
 
-    // Init GPS location
+    checkEmployeeAuth();
     initLocationWatcher();
-
-    // Load initial today attendance and history
-    loadTodayStatus();
 });

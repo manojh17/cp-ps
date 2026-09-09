@@ -14,7 +14,65 @@
     <!-- Toast Notification Container -->
     <div id="toastContainer" class="toast-container"></div>
 
-    <div class="app">
+    <!-- Employee One-Time Login Modal (Persistent Session) -->
+    <div id="employeeLoginModal" class="modal-overlay" style="display: none;">
+        <div class="modal-card" style="max-width: 420px;">
+            <div class="modal-header">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div class="logo-mark" style="width: 32px; height: 32px; font-size: 15px;">⚡</div>
+                    <div>
+                        <h3 style="font-size: 16px; margin: 0;">Employee Sign In</h3>
+                        <p style="font-size: 11px; color: var(--text-muted); margin: 0;">Attendance Portal • IST</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-body">
+                <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
+                    Sign in once with your Employee ID and password. You will stay signed in on this device.
+                </p>
+                <form id="employeeLoginForm" onsubmit="handleEmployeeLogin(event)">
+                    <div class="form-group">
+                        <label for="loginEmpId">Employee ID</label>
+                        <input
+                            type="text"
+                            id="loginEmpId"
+                            class="form-control"
+                            placeholder="e.g. EMP1001"
+                            required
+                            autocomplete="username"
+                            style="text-transform: uppercase;"
+                        >
+                    </div>
+
+                    <div class="form-group">
+                        <label for="loginEmpPassword">Password</label>
+                        <input
+                            type="password"
+                            id="loginEmpPassword"
+                            class="form-control"
+                            placeholder="Enter password (default: emp123)"
+                            required
+                            autocomplete="current-password"
+                        >
+                        <div class="form-help" style="margin-top: 6px; font-size: 11px; color: var(--text-light);">
+                            🔒 Passwords are set and managed exclusively by your administrator.
+                        </div>
+                    </div>
+
+                    <div id="employeeLoginErrorMsg" style="font-size: 12px; color: var(--danger); margin-bottom: 12px; display: none;"></div>
+
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 18px;">
+                        <a href="/admin" class="btn btn-secondary btn-sm" style="text-decoration: none;">🛡️ Admin Portal</a>
+                        <button type="submit" class="btn btn-primary" id="btnEmpLoginSubmit">
+                            ⚡ Sign In
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="app" id="employeePortalApp">
 
         <!-- Header -->
         <header class="header">
@@ -27,22 +85,25 @@
             </div>
 
             <div class="header-right">
-                <a href="/admin" class="nav-switch-btn" title="Open Admin Portal">
-                    🛡️ Admin Portal
-                </a>
+                <!-- Logged in staff badge -->
+                <div class="employee-user-badge" id="employeeUserBadge" style="display: none; align-items: center; gap: 8px;">
+                    <div class="user-meta" style="text-align: right; line-height: 1.2;">
+                        <span id="headerEmpName" style="font-size: 13px; font-weight: 700; color: var(--text-main); display: block;">--</span>
+                        <span id="headerEmpId" style="font-size: 11px; color: var(--text-light);">--</span>
+                    </div>
+                    <button class="btn btn-secondary btn-sm" onclick="handleEmployeeLogout()" title="Sign out / Switch user on this device" style="padding: 5px 9px; font-size: 12px;">
+                        🚪 Sign Out
+                    </button>
+                </div>
 
                 <div class="server-badge" id="serverTimeBadge">
-                    <span class="status-dot green pulse"></span>
+                    <span class="status-dot green" id="serverStatusDot"></span>
                     <span id="serverStatusText">Syncing IST...</span>
                 </div>
 
-                <div class="profile">
-                    <div class="profile-avatar">M</div>
-                    <div>
-                        <strong>Manojh</strong>
-                        <span>Employee #EMP001</span>
-                    </div>
-                </div>
+                <a href="/admin" class="nav-switch-btn" title="Open Admin Portal">
+                    🛡️ Admin Portal
+                </a>
             </div>
         </header>
 
@@ -54,18 +115,17 @@
                 <div>
                     <div class="card-meta">
                         <span class="label">INDIAN STANDARD TIME</span>
-                        <span class="tag-pill">Asia/Kolkata</span>
+                        <span class="tag-pill">Asia/Kolkata (UTC+05:30)</span>
                     </div>
                     <h2 id="date">Loading date...</h2>
                     <p class="time" id="time">--:--:-- --</p>
                 </div>
 
-                <div class="status-badge-container">
-                    <div class="status-badge" id="shiftBadge">
-                        <span class="status-dot"></span>
-                        Office Day
-                    </div>
-                    <span class="server-sub">Strict Server Timestamped</span>
+                <div class="employee-badge-box">
+                    <div class="label">CURRENT STAFF</div>
+                    <strong id="displayEmpName" style="font-size: 16px; color: var(--text-main); display: block;">Manojh</strong>
+                    <div class="emp-role" id="displayEmpRole">Software Engineer • #EMP1001</div>
+                    <div class="emp-salary" id="displayEmpSalary">Salary: ₹75,000 / mo</div>
                 </div>
             </section>
 
@@ -74,12 +134,12 @@
                 <div class="card-header">
                     <div>
                         <p class="label">ATTENDANCE ACTION</p>
-                        <h2>Mark Your Attendance</h2>
+                        <h2>Mark Shift Attendance</h2>
                     </div>
 
-                    <div class="location-status" id="locationStatusBadge">
-                        <span class="location-dot" id="locationDot"></span>
-                        <span id="locationBadgeText">Checking Location</span>
+                    <div class="location-status-badge" id="locationStatusBadge">
+                        <span class="status-dot orange" id="locationDot"></span>
+                        <span id="locationBadgeText">Detecting GPS...</span>
                     </div>
                 </div>
 
@@ -90,26 +150,15 @@
                     <div class="location-info">
                         <div class="location-info-header">
                             <div>
-                                <h3>Office Location Geofence</h3>
+                                <h3>Office Geofence Compliance</h3>
                                 <p id="location-status">Detecting device GPS coordinates...</p>
-                            </div>
-
-                            <!-- Testing Mode Switch -->
-                            <div class="geo-switch-wrapper">
-                                <label class="switch-label" title="Enable to test check-in even when outside office radius">
-                                    <input type="checkbox" id="demoModeToggle">
-                                    <span class="switch-slider"></span>
-                                    <span class="switch-text">Test Mode (Bypass Radius)</span>
-                                </label>
                             </div>
                         </div>
 
                         <div class="coordinates">
-                            <span>Target Office: <strong id="targetOfficeCoords">12.912985, 79.132010</strong></span>
-                            <span>Your Lat: <strong id="latitude">--</strong></span>
-                            <span>Your Lon: <strong id="longitude">--</strong></span>
-                            <span>Accuracy: <strong id="accuracy">--</strong></span>
-                            <span>Distance: <strong id="distanceVal">--</strong></span>
+                            <span>GPS Status: <strong id="gpsStatus">Acquiring...</strong></span>
+                            <span>GPS Accuracy: <strong id="accuracyBadge">Detecting...</strong></span>
+                            <span>Office Perimeter: <strong id="perimeterStatus">Checking...</strong></span>
                         </div>
                     </div>
                 </div>
@@ -117,11 +166,11 @@
                 <!-- Action Buttons -->
                 <div class="attendance-actions">
                     <button class="btn check-in" id="checkInBtn" onclick="handleCheckIn()">
-                        <span class="btn-icon">⚡</span> CHECK IN
+                        <span>⚡</span> PUNCH IN
                     </button>
 
                     <button class="btn check-out" id="checkOutBtn" onclick="handleCheckOut()" disabled>
-                        <span class="btn-icon">🏁</span> CHECK OUT
+                        <span>🏁</span> PUNCH OUT
                     </button>
 
                     <button class="btn btn-secondary" id="refreshBtn" onclick="loadTodayStatus(true)" title="Refresh status from server">
@@ -132,7 +181,7 @@
                 <!-- Current Live Status -->
                 <div class="current-status">
                     <div>
-                        <span class="status-label">CURRENT STATUS</span>
+                        <span class="status-label">CURRENT SHIFT STATUS</span>
                         <strong id="attendanceStatus" class="status-text not-checked">Not Checked In</strong>
                     </div>
 
@@ -144,57 +193,56 @@
             </section>
 
             <!-- Today's Summary Metrics -->
-            <section class="summary">
+            <section class="summary-grid">
                 <div class="summary-card">
-                    <span>CHECK IN (IST)</span>
+                    <span>PUNCH IN (IST)</span>
                     <strong id="checkInTime">--:--</strong>
-                    <small id="checkInDate" class="card-hint">Pending</small>
+                    <small id="checkInDate">Pending</small>
                 </div>
 
                 <div class="summary-card">
-                    <span>CHECK OUT (IST)</span>
+                    <span>PUNCH OUT (IST)</span>
                     <strong id="checkOutTime">--:--</strong>
-                    <small id="checkOutDate" class="card-hint">Pending</small>
+                    <small id="checkOutDate">Pending</small>
                 </div>
 
                 <div class="summary-card">
                     <span>TOTAL DURATION</span>
                     <strong id="totalHours">--</strong>
-                    <small id="workingRate" class="card-hint">Calculated on exit</small>
+                    <small id="workingRate">Calculated on punch out</small>
                 </div>
 
                 <div class="summary-card">
                     <span>DAY STATUS</span>
                     <strong id="dayStatus">Pending</strong>
-                    <small id="statusHint" class="card-hint">Attendance Record</small>
+                    <small id="statusHint">Attendance Record</small>
                 </div>
             </section>
 
             <!-- Attendance History / Log Table -->
-            <section class="history-section">
-                <div class="history-header">
+            <section class="table-card">
+                <div class="table-header">
                     <div>
-                        <p class="label">ACTIVITY LOG</p>
-                        <h2>Recent Attendance Records</h2>
+                        <p class="label">MY ATTENDANCE LOGS</p>
+                        <h2>Recent Punch History</h2>
                     </div>
-                    <span class="history-badge" id="recordsCount">0 Records</span>
+                    <span class="badge-count" id="recordsCount">0 Records</span>
                 </div>
 
                 <div class="table-container">
-                    <table class="history-table">
+                    <table>
                         <thead>
                             <tr>
                                 <th>Date (IST)</th>
-                                <th>Check In</th>
-                                <th>Check Out</th>
-                                <th>Duration</th>
+                                <th>Punch In (IST)</th>
+                                <th>Punch Out (IST)</th>
+                                <th>Working Duration</th>
                                 <th>Status</th>
-                                <th>Location Verified</th>
                             </tr>
                         </thead>
                         <tbody id="historyTableBody">
                             <tr>
-                                <td colspan="6" class="empty-state">Loading attendance history...</td>
+                                <td colspan="5" class="empty-state">Loading attendance history...</td>
                             </tr>
                         </tbody>
                     </table>
